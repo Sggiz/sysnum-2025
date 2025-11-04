@@ -1,0 +1,10 @@
+(executable
+  (name netlist_simulator)
+  (public_name nlsim)
+  (modules graph netlist_ast netlist_printer scheduler netlist_simulator
+           netlist_parser netlist_lexer netlist))
+
+(menhir
+ (modules netlist_parser))
+
+(ocamllex netlist_lexer)

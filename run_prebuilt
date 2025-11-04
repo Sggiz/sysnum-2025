@@ -1,0 +1,3 @@
+#!bin/bash
+
+./prebuilt_netlist_simulator.byte $1

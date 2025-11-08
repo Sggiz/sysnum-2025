@@ -8,6 +8,10 @@ let endianness = LittleEndian
 let number_steps = ref (-1)
 
 
+let val_length = function
+    |VBit _ -> 1
+    |VBitArray(a) -> Array.length a
+
 let val_to_bool = function
     (* use single-bit values as booleans *)
     |VBit(b) -> b
@@ -99,31 +103,36 @@ let select_bus i = function
 
 (* Memory reading and writing *)
 
-let mem_read mem _ (*addr_size*) word_size read_addr_val =
-    let b_arr = Array.make word_size false in
+let mem_read t addr_size word_size read_addr_val =
+    assert (val_length read_addr_val <= addr_size);
+
     let read_addr_int = val_to_int read_addr_val in
+    if word_size = 1 then VBit(t.(read_addr_int)) else
+
+    let b_arr = Array.make word_size false in
     for i = 0 to (word_size -1) do
-        if mem.(read_addr_int + i) then b_arr.(i) <- true
+        if t.(read_addr_int * word_size + i) then b_arr.(i) <- true
     done;
     VBitArray(b_arr)
 
-let mem_write mem _ (*addr_size*) write_addr_val data_val =
-    let write_addr_int = val_to_int write_addr_val in
-    let data = (match data_val with
-        |VBit(b) -> [|b|]
-        |VBitArray(b_arr) -> b_arr
-    ) in
-    
-    assert (write_addr_int + Array.length data <= Array.length mem);
+let mem_write t addr_size word_size write_addr_val data_val =
+    assert (val_length write_addr_val <= addr_size);
+    assert (val_length data_val = word_size);
 
-    for i = 0 to (Array.length data -1) do
-        mem.(write_addr_int + i) <- data.(i)
+    let write_addr_int = val_to_int write_addr_val in
+    if word_size = 1 then 
+        t.(write_addr_int) <- val_to_bool data_val
+    else
+
+    let data = val_to_bitarray data_val in
+    for i = 0 to (word_size -1) do
+        t.(write_addr_int * word_size + 1) <- data.(i)
     done
 
 
-let evaluate_exp mem prev_env env = function
+let evaluate_exp mem prev_env env id = function
     |Earg(arg) -> evaluate_arg env arg
-    |Ereg(id) -> Env.find id prev_env
+    |Ereg(id) -> fetch_id_val prev_env id
     |Enot(arg) -> VBit(not (val_to_bool @@ evaluate_arg env arg))
     |Ebinop(binop,a,b) -> evaluate_binop env binop a b
     |Emux(mux,a,b) ->
@@ -138,26 +147,32 @@ let evaluate_exp mem prev_env env = function
     |Eselect(i, arg_a) ->
         select_bus i @@ evaluate_arg env arg_a
 
-    |Erom(addr_size, word_size, read_addr)
-    |Eram(addr_size, word_size, read_addr, _, _, _) ->
-        mem_read mem addr_size word_size (evaluate_arg env read_addr)
+    |Erom(addr_size, word_size, read_addr) ->
+        begin match Hashtbl.find_opt mem id with
+        | None -> failwith "No table for ROM"
+        | Some(t) -> mem_read t addr_size word_size (evaluate_arg env read_addr)
+        end
+(*     |Eram(addr_size, word_size ,read_addr, write_enable,_,_) -> *)
+    |Eram(addr_size, word_size, read_addr, write_enable, write_addr, data) ->
+        let _ = mem_write in
+        begin match Hashtbl.find_opt mem id with
+        | None -> failwith "No table for RAM"
+        | Some(t) -> let out =
+            mem_read t addr_size word_size (evaluate_arg env read_addr) in
+            if val_to_bool @@ evaluate_arg env write_enable then (
+                let write_addr_val = evaluate_arg env write_addr
+                and data_val = evaluate_arg env data in
+                ignore (write_addr_val); ignore (data_val)
+(*                 mem_write t addr_size word_size write_addr_val data_val *)
+            );
+            out
+        end
 
 let compute_eq mem prev_env env (id, exp) =
     (* Associates the variable's ident with its evaluated expression *)
     Env.add id (
-        evaluate_exp mem prev_env env exp
+        evaluate_exp mem prev_env env id exp
     ) env
-
-let compute_write_eq mem env (_,exp) =
-    match exp with
-    |Eram(addr_size, _, _, write_enable, write_addr, data)
-        when val_to_bool @@ evaluate_arg env write_enable ->
-        let write_addr_val = evaluate_arg env write_addr
-        and data_val = evaluate_arg env data in
-        mem_write mem addr_size write_addr_val data_val
-    |_ -> ()
-
-
 
 
 (* User interface *)
@@ -192,42 +207,35 @@ let print_outputs env outputs =
     in
     List.iter print outputs
 
-(*
 let print_all mem env =
     let p_bind (ident, v) =
         match v with
-        |VBit(b) -> Printf.printf "%s = %c\n" ident (if b then '1' else '0')
+        |VBit(b) -> Printf.printf " | %s = %c\n" ident (if b then '1' else '0')
         |VBitArray(b_arr) ->
-            Printf.printf "%s:%d = %s\n" ident (Array.length b_arr)
+            Printf.printf " | %s:%d = %s\n" ident (Array.length b_arr)
                 (bitarray_to_string b_arr)
     in
-    List.iter p_bind (Env.bindings env);
-    Printf.printf "memory:%d === %s\n" (Array.length mem)
-        (bitarray_to_string mem)
-*)
-
-
-
-let find_req_memory_size program =
-    (* returns maximum nomber of bits used to describe addresses *)
-    let req_bits = function
-        |Erom(addr_size, _, _) -> addr_size
-        |Eram(addr_size,_,_,_,_,_) -> addr_size
-        |_ -> 0
+    let p_mem id t =
+        Printf.printf " | MEM %s:%d == %s\n" 
+            id
+            (Array.length t)
+            (bitarray_to_string t)
     in
-    program.p_eqs
-    |> List.map (fun (_,exp) -> req_bits exp)
-    |> List.fold_left (max) 0
+    Printf.printf "Print ALL :\n";
+    List.iter p_bind (Env.bindings env);
+    Printf.printf " |- - MEMORY - -\n";
+    Hashtbl.iter p_mem mem
+
 
 
 let rec compute_cycle program mem prev_env number_steps =
     if number_steps = 0 then () else
-    (* print_all mem prev_env; *)
     let input_env = poll_inputs program program.p_inputs in
-    let final_env = 
+    print_all mem input_env;
+    let final_env =
         List.fold_left (compute_eq mem prev_env) input_env program.p_eqs in
-    List.iter (compute_write_eq mem final_env) program.p_eqs;
     print_outputs final_env program.p_outputs;
+    print_all mem final_env;
     compute_cycle program mem final_env (number_steps - 1)
 
 
@@ -241,11 +249,27 @@ let create_initial_env program =
     |> fun env -> List.fold_left set_val_nul env program.p_inputs
     |> fun env -> List.fold_left set_val_nul env (List.map fst program.p_eqs)
 
+let create_initial_mem program =
+    let mem = Hashtbl.create 17 in
+    let is_mem : equation -> bool = function
+        | _,Erom(_,_,_) | _,Eram(_,_,_,_,_,_) -> true
+        | _ -> false
+    in
+    let set_val_nul = function
+        | id, Erom(addr_size, word_size, _) 
+        | id, Eram(addr_size, word_size, _,_,_,_) ->
+            Array.make ( (1 lsl addr_size) * word_size ) false
+            |> Hashtbl.add mem id
+        | _ -> failwith "irrelevant equation"
+    in
+
+    List.iter (fun eq -> if is_mem eq then set_val_nul eq) program.p_eqs;
+    mem
+
 
 
 let simulator program number_steps =
-    (* mem is the memory table, size 2 ^ (max_address_size +1) *)
-    let mem = Array.make ( 1 lsl (find_req_memory_size program +1)) false in
+    let mem = create_initial_mem program in
     let env = create_initial_env program in
     compute_cycle program mem env number_steps
 

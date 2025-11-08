@@ -126,7 +126,7 @@ let mem_write t addr_size word_size write_addr_val data_val =
 
     let data = val_to_bitarray data_val in
     for i = 0 to (word_size -1) do
-        t.(write_addr_int * word_size + 1) <- data.(i)
+        t.(write_addr_int * word_size + i) <- data.(i)
     done
 
 
@@ -152,20 +152,11 @@ let evaluate_exp mem prev_env env id = function
         | None -> failwith "No table for ROM"
         | Some(t) -> mem_read t addr_size word_size (evaluate_arg env read_addr)
         end
-(*     |Eram(addr_size, word_size ,read_addr, write_enable,_,_) -> *)
-    |Eram(addr_size, word_size, read_addr, write_enable, write_addr, data) ->
-        let _ = mem_write in
+    |Eram(addr_size, word_size ,read_addr, _,_,_) ->
         begin match Hashtbl.find_opt mem id with
         | None -> failwith "No table for RAM"
-        | Some(t) -> let out =
-            mem_read t addr_size word_size (evaluate_arg env read_addr) in
-            if val_to_bool @@ evaluate_arg env write_enable then (
-                let write_addr_val = evaluate_arg env write_addr
-                and data_val = evaluate_arg env data in
-                ignore (write_addr_val); ignore (data_val)
-(*                 mem_write t addr_size word_size write_addr_val data_val *)
-            );
-            out
+        | Some(t) ->
+            mem_read t addr_size word_size (evaluate_arg env read_addr)
         end
 
 let compute_eq mem prev_env env (id, exp) =
@@ -173,6 +164,17 @@ let compute_eq mem prev_env env (id, exp) =
     Env.add id (
         evaluate_exp mem prev_env env id exp
     ) env
+
+let compute_write_eq mem env (id, exp) =
+    match exp with
+    | Eram(addr_size, word_size, _, write_enable, write_addr, data) 
+        when val_to_bool @@ evaluate_arg env write_enable ->
+        let t = Hashtbl.find mem id
+        and write_addr_val = evaluate_arg env write_addr
+        and data_val = evaluate_arg env data in
+        mem_write t addr_size word_size write_addr_val data_val
+    | _ -> ()
+
 
 
 (* User interface *)
@@ -207,6 +209,7 @@ let print_outputs env outputs =
     in
     List.iter print outputs
 
+(*
 let print_all mem env =
     let p_bind (ident, v) =
         match v with
@@ -225,17 +228,17 @@ let print_all mem env =
     List.iter p_bind (Env.bindings env);
     Printf.printf " |- - MEMORY - -\n";
     Hashtbl.iter p_mem mem
-
+*)
 
 
 let rec compute_cycle program mem prev_env number_steps =
     if number_steps = 0 then () else
     let input_env = poll_inputs program program.p_inputs in
-    print_all mem input_env;
     let final_env =
         List.fold_left (compute_eq mem prev_env) input_env program.p_eqs in
+    List.iter (compute_write_eq mem final_env) program.p_eqs;
     print_outputs final_env program.p_outputs;
-    print_all mem final_env;
+(*     print_all mem final_env; *)
     compute_cycle program mem final_env (number_steps - 1)
 
 

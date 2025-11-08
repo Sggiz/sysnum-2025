@@ -1,0 +1,7 @@
+INPUT read_addr, we1, we2, write_addr, data
+OUTPUT o1, o2
+VAR read_addr:2, we1, we2, write_addr:2, data:4, o1:4, o2:4
+IN
+o1 = RAM 2 4 read_addr we1 write_addr data
+o2 = RAM 2 4 read_addr we2 write_addr data
+

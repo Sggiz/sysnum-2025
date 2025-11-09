@@ -36,19 +36,14 @@ let val_to_bitarray = function
     |VBitArray(arr) -> arr
     |VBit(b) -> [|b|]
 
-let int_to_bitarray n x =
-    let b_arr = Array.make n false in
-    let xr = ref x in
-    for i = 0 to n-1 do
-        if !xr mod 2 = 1 then
-        b_arr.(
-            match endianness with
-            |LittleEndian -> i
-            (* |BigEndian -> n-1 - i *)
-        ) <- true;
-        xr := !xr / 2
+let string_to_bit_array_opt s =
+    let is_bit c = c='0' || c='1' in
+    if not (String.for_all is_bit s) then None else
+    let b_arr = Array.make (String.length s) false in
+    for i = 0 to Array.length b_arr -1 do
+        if s.[i] = '1' then b_arr.(i) <- true
     done;
-    VBitArray(b_arr)
+    Some(b_arr)
 
 let bitarray_to_string b_arr =
     if b_arr = [||] then "--" else
@@ -70,8 +65,7 @@ let evaluate_binop env binop a b =
     in
     match binop with
         |Or -> VBit(ba || bb)
-        |Xor ->
-            if ba && bb then VBit(false) else VBit(ba || bb)
+        |Xor -> VBit(ba <> bb)
         |And -> VBit(ba && bb)
         |Nand -> VBit(not (ba && bb))
 
@@ -180,31 +174,32 @@ let compute_write_eq mem env (id, exp) =
 (* User interface *)
 
 let poll_inputs program inputs =
-    (* Polls input values one by one : ? ident <- ... *)
+    (* Polls input values one by one : ident ? ... *)
     let rec poll env input_id =
-        Printf.printf "? %s <- " input_id;
+        Printf.printf "%s ? " input_id;
         let input_t = Env.find input_id program.p_vars in
-        let scanned_input = read_int_opt () in
-        match input_t, scanned_input with
-        |TBit, Some(x) when x=1 || x=0 ->
-            Env.add input_id (VBit(x=1)) env
-        |TBitArray(n), Some(x) when 0 <= x && x < (1 lsl n) ->
-            Env.add input_id (int_to_bitarray n x) env
+        let scanned_input = read_line () in
+        let input = string_to_bit_array_opt scanned_input in
+        match input_t, input with
+        |TBit, Some([|b|]) ->
+            Env.add input_id (VBit(b)) env
+        |TBitArray(n), Some(b_arr) when n = Array.length b_arr ->
+            Env.add input_id (VBitArray(b_arr)) env
         |_ ->
-            Printf.printf "Veuillez fournir une entrée valide\n";
+            Printf.printf "Wrong input.\n";
             poll env input_id
     in
     List.fold_left poll Env.empty inputs
 
 let print_outputs env outputs =
-    (* Prints outputs (at the end of a cycle) : ident = bool(value) *)
+    (* Prints outputs (at the end of a cycle) : => ident = value *)
     let print output_id =
         match Env.find output_id env with
-        |VBit(b) -> Printf.printf "%s = %s\n" output_id (string_of_bool b)
+        |VBit(b) -> Printf.printf "=> %s = %c\n" output_id 
+            (if b then '1' else '0')
         |VBitArray(b_arr) ->
-            Printf.printf "%s:%d = %s\n"
+            Printf.printf "=> %s = %s\n"
                 output_id
-                (Array.length b_arr)
                 (bitarray_to_string b_arr)
     in
     List.iter print outputs
@@ -231,15 +226,17 @@ let print_all mem env =
 *)
 
 
-let rec compute_cycle program mem prev_env number_steps =
-    if number_steps = 0 then () else
-    let input_env = poll_inputs program program.p_inputs in
-    let final_env =
-        List.fold_left (compute_eq mem prev_env) input_env program.p_eqs in
-    List.iter (compute_write_eq mem final_env) program.p_eqs;
-    print_outputs final_env program.p_outputs;
-(*     print_all mem final_env; *)
-    compute_cycle program mem final_env (number_steps - 1)
+let rec compute_cycle program mem prev_env n_steps =
+    if n_steps = 0 then () else begin
+        Printf.printf "Step %d:\n" (!number_steps - n_steps +1);
+        let input_env = poll_inputs program program.p_inputs in
+        let final_env =
+            List.fold_left (compute_eq mem prev_env) input_env program.p_eqs in
+        List.iter (compute_write_eq mem final_env) program.p_eqs;
+        print_outputs final_env program.p_outputs;
+(*         print_all mem final_env; *)
+        compute_cycle program mem final_env (n_steps - 1)
+    end
 
 
 let create_initial_env program =
@@ -271,10 +268,10 @@ let create_initial_mem program =
 
 
 
-let simulator program number_steps =
+let simulator program n_steps =
     let mem = create_initial_mem program in
     let env = create_initial_env program in
-    compute_cycle program mem env number_steps
+    compute_cycle program mem env n_steps
 
 
 
